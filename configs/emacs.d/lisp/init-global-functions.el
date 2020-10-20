@@ -230,17 +230,6 @@ Attempts to follow the Do What I Mean philosophy."
       (widen)
     (narrow-to-region-or-subtree)))
 
-(defun open-current-line-in-codebase-search ()
-  "Go to the current file's current line on the codebase site."
-  (interactive)
-  (let* ((line-num (number-to-string (line-number-at-pos)))
-         (file-path (replace-regexp-in-string
-                     (expand-file-name (vc-find-root (buffer-file-name) ".git"))
-                     ""
-                     (buffer-file-name)))
-         (args (concat "http://codesearch.csnzoo.com/source/xref/php/" file-path "#" line-num)))
-    (call-process "open" nil nil nil args)))
-
 ;;; From http://beatofthegeek.com/2014/02/my-setup-for-using-emacs-as-web-browser.html
 (defun wikipedia-search (search-term)
   "Search for SEARCH-TERM on wikipedia"
@@ -252,6 +241,16 @@ Attempts to follow the Do What I Mean philosophy."
   (w3m-browse-url (concat
                "http://en.m.wikipedia.org/w/index.php?search="
                search-term)))
+
+(defun air--get-vc-root ()
+    "Get the root directory of the current VC project.
+
+This function assumes that the current buffer is visiting a file that
+is within a version controlled project."
+    (require 'vc)
+    (vc-call-backend
+     (vc-responsible-backend (buffer-file-name))
+     'root (buffer-file-name)))
 
 (provide 'init-global-functions)
 ;;; init-global-functions.el ends here

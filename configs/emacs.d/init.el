@@ -7,16 +7,26 @@
 ;;
 ;;; Code:
 
-(set-language-environment 'utf-8)
-(setq locale-coding-system 'utf-8)
-(set-default-coding-systems 'utf-8)
-(prefer-coding-system 'utf-8)
+(setq-default buffer-file-coding-system 'utf-8-unix)
+(set-default-coding-systems 'utf-8-unix)
+(setq locale-coding-system 'utf-8-unix)
+(prefer-coding-system 'utf-8-unix)
+
+(setq initial-scratch-message
+      (concat
+       ";; This buffer is for text that is not saved, and for Lisp evaluation.\n"
+       ";; To create a file, visit it with C-x C-f and enter text in its buffer.\n"
+       ";;\n"
+       ";; __          __  _                            \n"
+       ";; \\ \\        / / | |                           \n"
+       ";;  \\ \\  /\\  / /__| | ___ ___  _ __ ___   ___   \n"
+       ";;   \\ \\/  \\/ / _ \\ |/ __/ _ \\| '_ ` _ \\ / _ \\  \n"
+       ";;    \\  /\\  /  __/ | (_| (_) | | | | | |  __/_ \n"
+       ";;     \\/  \\/ \\___|_|\\___\\___/|_| |_| |_|\\___(_)\n"))
 
 ;; Leave this here, or package.el will just add it again.
 (package-initialize)
 
-(require 'package)
-(setq package-enable-at-startup nil)
 (add-to-list 'load-path (expand-file-name "lisp" user-emacs-directory))
 
 ;; Also add all directories within "lisp"
@@ -30,7 +40,9 @@
         (add-to-list 'load-path (car file))))))
 
 (add-to-list 'custom-theme-load-path (expand-file-name "themes" user-emacs-directory))
-(add-to-list 'exec-path "/usr/local/bin")
+
+(if (not (eq window-system 'w32))
+    (add-to-list 'exec-path "/usr/local/bin"))
 
 ;; Don't litter my init file
 (setq custom-file (expand-file-name "custom.el" user-emacs-directory))
@@ -54,7 +66,10 @@
 (tool-bar-mode -1)
 (when (boundp 'scroll-bar-mode)
   (scroll-bar-mode -1))
+
 (show-paren-mode 1)
+(setq show-paren-delay 0)
+
 (setq visual-line-fringe-indicators '(left-curly-arrow right-curly-arrow))
 (setq-default left-fringe-width nil)
 (setq-default indicate-empty-lines t)
@@ -70,16 +85,16 @@
 (setq tramp-default-method "ssh")
 (setq tramp-syntax 'simplified)
 
-;; Allow confusing functions
+;; Allow "confusing" functions
 (put 'narrow-to-region 'disabled nil)
 (put 'dired-find-alternate-file 'disabled nil)
 
-(defun air--delete-trailing-whitespace-in-proc-and-org-files ()
+(defun air--delete-trailing-whitespace-in-prog-and-org-files ()
   "Delete trailing whitespace if the buffer is in `prog-' or `org-mode'."
   (if (or (derived-mode-p 'prog-mode)
           (derived-mode-p 'org-mode))
       (delete-trailing-whitespace)))
-(add-to-list 'write-file-functions 'air--delete-trailing-whitespace-in-proc-and-org-files)
+(add-to-list 'write-file-functions 'air--delete-trailing-whitespace-in-prog-and-org-files)
 
 (defun my-minibuffer-setup-hook ()
   "Increase GC cons threshold."
@@ -97,17 +112,17 @@
 (setq make-backup-files nil)
 
 ;;; File type overrides.
-(add-to-list 'auto-mode-alist '("\\.html$" . web-mode))
-(add-to-list 'auto-mode-alist '("\\.twig$" . web-mode))
 (add-to-list 'auto-mode-alist '("\\.restclient$" . restclient-mode))
-
-;;; Use pcomplete because it helps in org-mode
-;;; TODO find out if there is a way to feed this into Company instead
-;; (add-to-list 'completion-at-point-functions 'pcomplete)
 
 ;;; My own configurations, which are bundled in my dotfiles.
 (require 'init-platform)
 (require 'init-global-functions)
+
+(use-package smart-mode-line
+  :ensure t
+  :config
+  (setq sml/theme 'dark)
+  (sml/setup))
 
 ;;; Required by init-maps, so it appears up here.
 (use-package tiny-menu
@@ -119,21 +134,19 @@
                            ((?r "This buffer"     revert-buffer)
                             (?o "All Org buffers" org-revert-all-org-buffers))))
           ("org-things"   ("Org Things"
-                           ((?t "Tag"       air-org-display-any-tag)
-                            (?i "ID"        air-org-goto-custom-id)
-                            (?k "Keyword"   org-search-view)
-                            (?h "Headings"  air-org-helm-headings)
-                            (?d "Directs"   air-org-display-directs)
-                            (?m "Managers"  air-org-display-managers)
-                            (?e "Engineers" air-org-display-engineers))))
+                           ((?t "Tag"        air-org-display-any-tag)
+                            (?i "ID"         air-org-goto-custom-id)
+                            (?k "Keyword"    org-search-view)
+                            (?h "Headings"   air-org-helm-headings)
+                            (?o "One-on-one" air-org-split-to-topics)
+                            (?s "Search"     air-org-grep))))
           ("org-agendas"  ("Org Agenda Views"
                            ((?a "All"    air-pop-to-org-agenda-default)
                             (?r "Review" air-pop-to-org-agenda-review)
-                            (?h "Home"   air-pop-to-org-agenda-home)
                             )))
           ("org-links"    ("Org Links"
                            ((?c "Capture"      org-store-link)
-                            (?l "Insert first" air-org-insert-first-link)
+                            (?l "Insert DWIM"  air-org-insert-link-dwim)
                             (?L "Insert any"   org-insert-link)
                             (?i "Custom ID"    air-org-insert-custom-id-link))))
           ("org-files"    ("Org Files"
@@ -141,58 +154,55 @@
                             (?n "Notes" (lambda () (interactive) (air-pop-to-org-notes nil)))
                             (?v "Vault" (lambda () (interactive) (air-pop-to-org-vault nil))))))
           ("org-captures" ("Org Captures"
-                           ((?c "Task"          (lambda () (interactive) (org-capture nil "c")))
-                            (?p "Personal task" (lambda () (interactive) (org-capture nil "p")))))))))
+                           ((?c "Task"    (lambda () (interactive) (org-capture nil "c")))
+                            (?b "Backlog" (lambda () (interactive) (org-capture nil "b")))
+                            (?n "Note"    (lambda () (interactive) (org-capture nil "n")))))))))
 
 ;;; Larger package-specific configurations.
 (require 'init-fonts)
-(require 'init-gtags)
 (require 'init-evil)
-(require 'init-twitter)
 (require 'init-maps)
 (require 'init-w3m)
-(require 'init-php)
 (require 'init-flycheck)
 (require 'init-tmux)
 
-(add-to-list 'load-path (expand-file-name "fence-edit" user-emacs-directory))
+;; My packages (make sure they're cloned into "lisp")
 (require 'fence-edit)
+(require 'hugo)
+(require 'periodic-commit-minor-mode)
 
 ;; Utilities
 (use-package s
   :ensure t
-  :defer 1)
-(use-package dash :ensure t)
+  :defer t)
 
-(use-package visual-fill-column :ensure t)
+(use-package dash
+  :ensure t
+  :defer t)
+
+(use-package visual-fill-column
+  :ensure t
+  :defer t)
 
 ;; Org Mode
-(add-to-list 'load-path (expand-file-name "periodic-commit-minor-mode" user-emacs-directory))
 (require 'init-org)
 
-;; Just while I'm working on it.
-(add-to-list 'load-path (expand-file-name "octopress-mode" user-emacs-directory))
-(use-package octopress
-  :ensure t
-  :commands (octopress-status octopress-mode)
-  :config
-  (require 'markdown-mode)
-  (add-hook 'markdown-mode-hook
-            (lambda ()
-              (octopress-minor-mode t))))
-
 (use-package all-the-icons
-  :ensure t)
+  :ensure t
+  :defer t)
 
 (use-package all-the-icons-dired
-  :ensure t)
+  :ensure t
+  :defer t)
 
 (use-package helm-make
   :ensure t
+  :defer t
   :config
   (global-set-key (kbd "C-c m") 'helm-make-projectile))
 
 (use-package dired
+  :defer t
   :config
   (require 'dired-x)
   (setq dired-omit-files "^\\.?#\\|^\\.[^.].*")
@@ -220,11 +230,13 @@
 
 (use-package elpy
   :ensure t
+  :mode "\\.py\\'"
   :config
   (elpy-enable))
 
 (use-package go-mode
   :ensure t
+  :mode "\\.go\\'"
   :config
   (add-hook 'go-mode-hook (lambda ()
                             (if (not (string-match "go" compile-command))
@@ -255,12 +267,14 @@
 
 (use-package css-mode
   :ensure t
+  :mode "\\.css\\'"
   :config
   (add-hook 'css-mode-hook (lambda ()
                              (rainbow-mode))))
 
 (use-package wgrep
   :ensure t
+  :defer t
   :config
   (setq wgrep-auto-save-buffer t)
   (defadvice wgrep-change-to-wgrep-mode (after wgrep-set-normal-state)
@@ -291,8 +305,12 @@
   (setq ag-reuse-buffers t)
   (setq ag-reuse-window t))
 
+(use-package deadgrep
+  :ensure t)
+
 (use-package js2-mode
   :ensure t
+  :defer t
   :config
   (setq js2-strict-missing-semi-warning nil)
   (setq js2-missing-semi-one-line-override t))
@@ -323,11 +341,8 @@
 
 (use-package company
   :ensure t
-  :defer t
-  :init
-  (global-company-mode)
+  :defer 2
   :config
-
   (defun org-keyword-backend (command &optional arg &rest ignored)
     "Company backend for org keywords.
 
@@ -352,9 +367,13 @@ COMMAND, ARG, IGNORED are the arguments required by the variable
   (define-key company-active-map (kbd "ESC") 'company-abort)
   (define-key company-active-map [tab] 'company-complete-common-or-cycle)
   (define-key company-active-map (kbd "C-n") 'company-select-next)
-  (define-key company-active-map (kbd "C-p") 'company-select-previous))
+  (define-key company-active-map (kbd "C-p") 'company-select-previous)
 
-(use-package counsel :ensure t)
+  (global-company-mode))
+
+(use-package counsel
+  :ensure t
+  :defer t)
 
 (use-package swiper
   :ensure t
@@ -365,19 +384,26 @@ COMMAND, ARG, IGNORED are the arguments required by the variable
   (setq counsel-grep-base-command "grep -niE \"%s\" %s")
   (setq ivy-height 20))
 
-(use-package dictionary :ensure t)
+(use-package dictionary
+  :ensure t
+  :defer t)
 
 (use-package emmet-mode
   :ensure t
-  :commands emmet-mode)
+  :commands emmet-mode
+  :config
+  (add-hook 'emmet-mode-hook
+            (lambda ()
+              (evil-define-key 'insert emmet-mode-keymap (kbd "C-S-l") 'emmet-next-edit-point)
+              (evil-define-key 'insert emmet-mode-keymap (kbd "C-S-h") 'emmet-prev-edit-point))))
 
 (use-package flycheck
   :ensure t
   :commands flycheck-mode)
 
 (use-package helm-projectile
-  :commands (helm-projectile helm-projectile-switch-project)
-  :ensure t)
+  :ensure t
+  :commands (helm-projectile helm-projectile-switch-project))
 
 (use-package markdown-mode
   :ensure t
@@ -396,84 +422,91 @@ COMMAND, ARG, IGNORED are the arguments required by the variable
   (add-hook 'markdown-mode-hook (lambda ()
                                   (visual-line-mode t)
                                   (set-fill-column 80)
+                                  (yas-minor-mode-on)
+                                  (hugo-minor-mode t)
                                   (turn-on-auto-fill)
                                   ;; Don't wrap Liquid tags
-                                  (setq-local auto-fill-inhibit-regexp "{% [a-zA-Z]+")
+                                  (setq auto-fill-inhibit-regexp (rx "{" (? "{") (1+ (or "%" "<" " ")) (1+ letter)))
                                   (flyspell-mode))))
 
-(use-package php-extras :ensure t :defer t)
-(use-package sublime-themes :ensure t)
-(use-package sunshine
+(use-package solarized-theme
   :ensure t
-  :commands sunshine-forecast
   :config
-  (defun get-string-from-file (file-path)
-    "Return FILE-PATH's contents."
-    (with-temp-buffer
-      (insert-file-contents file-path)
-      (buffer-string)))
-  (setq sunshine-appid (get-string-from-file
-                        (expand-file-name "sunshine-appid" user-emacs-directory)))
-  (setq sunshine-location "Boston, MA, USA")
-  (setq sunshine-show-icons t))
-
-(use-package twittering-mode
-  :ensure t
-  :commands twit
-  :config
-  (add-hook 'twittering-mode-hook
-            (lambda ()
-              (define-key twittering-mode-map (kbd ",o") 'delete-other-windows)
-              (define-key twittering-mode-map (kbd ",b") 'helm-mini)
-              (define-key twittering-mode-map (kbd "C-c r") 'twittering-retweet)))
-  (setq twittering-use-native-retweet t)
-  (setq twittering-default-show-replied-tweets 3)
-  (setq twittering-use-icon-storage t))
+  (setq solarized-use-variable-pitch nil)
+  (setq solarized-scale-org-headlines nil)
+  (load-theme 'solarized-zenburn t))
 
 (use-package web-mode
   :ensure t
-  :defer t
+  :mode "\\(?:\\(?:\\.\\(?:html\\|twig\\)\\)\\)\\'"
   :config
-  (setq web-mode-attr-indent-offset 2)
-  (setq web-mode-code-indent-offset 2)
-  (setq web-mode-css-indent-offset 2)
-  (setq web-mode-indent-style 2)
-  (setq web-mode-markup-indent-offset 2)
-  (setq web-mode-sql-indent-offset 2))
+  (setq web-mode-attr-indent-offset 2
+        web-mode-code-indent-offset 2
+        web-mode-css-indent-offset 2
+        web-mode-indent-style 2
+        web-mode-markup-indent-offset 2
+        web-mode-sql-indent-offset 2)
 
-(use-package color-theme-sanityinc-tomorrow :ensure t)
-(use-package zenburn-theme :ensure t :defer t)
+  (setq web-mode-ac-sources-alist
+        '(("php" . (ac-source-php-extras
+                    ac-source-yasnippet
+                    ac-source-gtags
+                    ac-source-abbrev
+                    ac-source-dictionary
+                    ac-source-words-in-same-mode-buffers))
+          ("css" . (ac-source-css-property
+                    ac-source-abbrev
+                    ac-source-dictionary
+                    ac-source-words-in-same-mode-buffers))))
 
-(use-package mmm-mode :ensure t :defer t)
-(use-package yaml-mode :ensure t :defer t)
+  (add-hook 'web-mode-hook
+            (lambda ()
+              (setq web-mode-style-padding 2)
+              (yas-minor-mode t)
+              (emmet-mode)
+              (flycheck-add-mode 'html-tidy 'web-mode)
+              (flycheck-mode)))
+
+  (add-hook 'web-mode-before-auto-complete-hooks
+            '(lambda ()
+               (let ((web-mode-cur-language (web-mode-language-at-pos)))
+                 (if (string= web-mode-cur-language "php")
+                     (yas-activate-extra-mode 'php-mode)
+                   (yas-deactivate-extra-mode 'php-mode))
+                 (if (string= web-mode-cur-language "css")
+                     (setq emmet-use-css-transform t)
+                   (setq emmet-use-css-transform nil))))))
+
+(use-package yaml-mode
+  :ensure t
+  ;; .yaml or .yml
+  :mode "\\(?:\\(?:\\.y\\(?:a?ml\\)\\)\\)\\'")
 
 (use-package yasnippet
   :ensure t
   :defer t
   :config
-  (yas-reload-all)
-  (setq yas-snippet-dirs '("~/.emacs.d/snippets"
-                           "~/.emacs.d/remote-snippets"))
+  ;;(yas-reload-all)
   (setq tab-always-indent 'complete)
-  (setq yas-prompt-functions '(yas-completing-prompt
-                               yas-ido-prompt
-                               yas-dropdown-prompt))
   (define-key yas-minor-mode-map (kbd "<escape>") 'yas-exit-snippet))
 
 (use-package yasnippet-snippets
-  :ensure t)
+  :ensure t
+  :defer t)
 
 (use-package which-key
   :ensure t
+  :defer t
   :diminish ""
   :config
   (which-key-mode t))
 
 (use-package projectile
   :ensure t
-  :defer 1
+  :defer t
   :config
   (projectile-mode)
+  (add-to-list 'projectile-globally-ignored-directories "*node_modules")
   (setq projectile-enable-caching t)
   (setq projectile-mode-line
         '(:eval
@@ -494,9 +527,10 @@ COMMAND, ARG, IGNORED are the arguments required by the variable
   (setq magit-branch-arguments nil)
   (setq magit-push-always-verify nil)
   (setq magit-last-seen-setup-instructions "1.4.0")
-  (magit-define-popup-switch 'magit-log-popup ?f "first parent" "--first-parent"))
-
-(require 'periodic-commit-minor-mode)
+  (add-hook 'magit-mode-hook
+            (lambda ()
+              (define-key magit-mode-map (kbd ",o") 'delete-other-windows)))
+  (add-hook 'git-commit-mode-hook 'evil-insert-state))
 
 (use-package mmm-mode
   :ensure t
@@ -517,16 +551,9 @@ COMMAND, ARG, IGNORED are the arguments required by the variable
   (mmm-add-mode-ext-class 'markdown-mode nil 'markdown-cl)
   (mmm-add-mode-ext-class 'markdown-mode nil 'markdown-php))
 
-(use-package undo-tree
-  :ensure t
-  :diminish t
-  :config
-  (setq undo-tree-auto-save-history t)
-  (setq undo-tree-history-directory-alist
-        (list (cons "." (expand-file-name "undo-tree-history" user-emacs-directory)))))
-
 (use-package atomic-chrome
   :ensure t
+  :defer t
   :config
   (setq atomic-chrome-default-major-mode 'markdown-mode)
   (add-hook 'atomic-chrome-edit-mode-hook (lambda ()
@@ -537,9 +564,6 @@ COMMAND, ARG, IGNORED are the arguments required by the variable
 (require 'epa-file)
 (epa-file-enable)
 (setq-default epa-file-cache-passphrase-for-symmetric-encryption t)
-
-(defvar show-paren-delay 0
-  "Delay (in seconds) before matching paren is highlighted.")
 
 ;;; Flycheck mode:
 (add-hook 'flycheck-mode-hook
@@ -575,19 +599,10 @@ COMMAND, ARG, IGNORED are the arguments required by the variable
 ;;; Python mode:
 (use-package virtualenvwrapper
   :ensure t
+  :defer t
   :config
   (venv-initialize-interactive-shells)
   (venv-initialize-eshell))
-
-(defun air--get-vc-root ()
-    "Get the root directory of the current VC project.
-
-This function assumes that the current buffer is visiting a file that
-is within a version controlled project."
-    (require 'vc)
-    (vc-call-backend
-     (vc-responsible-backend (buffer-file-name))
-     'root (buffer-file-name)))
 
 (defun air-python-setup ()
   "Configure Python environment."
@@ -649,7 +664,6 @@ The IGNORED argument is... Ignored."
     ad-do-it))
 (ad-activate 'term-sentinel)
 
-;; Eshell things
 (defun air--eshell-clear ()
   "Clear an eshell buffer and re-display the prompt."
   (interactive)
@@ -665,48 +679,9 @@ The IGNORED argument is... Ignored."
                                             (kill-this-buffer)
                                             (if (not (one-window-p))
                                                 (delete-window))))
-  (set (make-local-variable 'pcomplete-ignore-case) t)
-  (set (make-local-variable 'company-backends)
-       '((esh-autosuggest))))
+  (set (make-local-variable 'pcomplete-ignore-case) t))
 
 (add-hook 'eshell-mode-hook 'air--eshell-mode-hook)
-
-;;; Magit mode (which does not open in evil-mode):
-(add-hook 'magit-mode-hook
-          (lambda ()
-            (define-key magit-mode-map (kbd ",o") 'delete-other-windows)))
-
-;;; Git Commit Mode (a Magit minor mode):
-(add-hook 'git-commit-mode-hook 'evil-insert-state)
-
-;;; Emmet mode:
-(add-hook 'emmet-mode-hook
-          (lambda ()
-            (evil-define-key 'insert emmet-mode-keymap (kbd "C-S-l") 'emmet-next-edit-point)
-            (evil-define-key 'insert emmet-mode-keymap (kbd "C-S-h") 'emmet-prev-edit-point)))
-
-;;; Web mode:
-(add-hook 'web-mode-hook
-          (lambda ()
-            (setq web-mode-style-padding 2)
-            (yas-minor-mode t)
-            (emmet-mode)
-            (flycheck-add-mode 'html-tidy 'web-mode)
-            (flycheck-mode)))
-
-(setq web-mode-ac-sources-alist
-      '(("php" . (ac-source-php-extras ac-source-yasnippet ac-source-gtags ac-source-abbrev ac-source-dictionary ac-source-words-in-same-mode-buffers))
-        ("css" . (ac-source-css-property ac-source-abbrev ac-source-dictionary ac-source-words-in-same-mode-buffers))))
-
-(add-hook 'web-mode-before-auto-complete-hooks
-          '(lambda ()
-             (let ((web-mode-cur-language (web-mode-language-at-pos)))
-               (if (string= web-mode-cur-language "php")
-                   (yas-activate-extra-mode 'php-mode)
-                 (yas-deactivate-extra-mode 'php-mode))
-               (if (string= web-mode-cur-language "css")
-                   (setq emmet-use-css-transform t)
-                 (setq emmet-use-css-transform nil)))))
 
 ;;; Emacs Lisp mode:
 (add-hook 'emacs-lisp-mode-hook
@@ -721,15 +696,6 @@ The IGNORED argument is... Ignored."
                           (setq sh-basic-offset 2)
                           (setq sh-indentation 2)))
 
-;;; Twittering mode:
-(setq twittering-use-master-password t)
-(add-hook 'twittering-mode-hook (lambda ()
-                                  (define-key twittering-mode-map (kbd "C-c C-a") 'twittering-favorite)
-                                  (define-key twittering-mode-map (kbd ",b") 'helm-mini)))
-
-(add-hook 'twittering-edit-mode-hook (lambda ()
-                                       (flyspell-mode)))
-
 ;;; Javascript mode:
 (add-hook 'javascript-mode-hook (lambda ()
                                   (set-fill-column 120)
@@ -741,47 +707,17 @@ The IGNORED argument is... Ignored."
                             (setq sgml-basic-offset 2)
                             (setq indent-tabs-mode nil)))
 
-(defun find-php-functions-in-current-buffer ()
-  "Find lines that appear to be PHP functions in the buffer.
-
-This function performs a regexp forward search from the top
-\(point-min) of the buffer to the end, looking for lines that
-appear to be PHP function declarations.
-
-The return value of this function is a list of cons in which
-the car of each cons is the bare function name and the cdr
-is the buffer location at which the function was found."
-  (save-excursion
-    (goto-char (point-min))
-    (let (res)
-      (save-match-data
-        (while (re-search-forward  "^ *\\(public \\|private \\|protected \\|static \\)*?function \\([^{]+\\)" nil t)
-          (let* ((fn-name (save-match-data (match-string-no-properties 2)))
-                 (fn-location (save-match-data (match-beginning 0))))
-            (setq res
-                  (append res
-                          (list `(,fn-name . ,fn-location)))))))
-      res)))
-
-(put 'narrow-to-region 'disabled nil)
-
-;;; sRGB doesn't blend with Powerline's pixmap colors, but is only
-;;; used in OS X. Disable sRGB before setting up Powerline.
-(when (memq window-system '(mac ns))
-  (setq ns-use-srgb-colorspace nil))
-
-(use-package gruvbox-theme
-  :ensure t
+(use-package server
+  :init
+  (progn
+    (when (equal window-system 'w32)
+      ;; Set EMACS_SERVER_FILE to `server-auth-dir'\`server-name'
+      ;; e.g. c:\Users\Aaron\emacs.d\server\server
+      (setq server-use-tcp t)))
   :config
-  (load-theme 'gruvbox))
+  (or (eq (server-running-p) t)
+      (server-start)))
 
-(use-package smart-mode-line
-  :ensure t
-  :config
-  (setq sml/theme 'dark)
-  (sml/setup))
-
-(server-start)
 
 (and (fboundp 'atomic-chrome-start-server)
   (atomic-chrome-start-server))

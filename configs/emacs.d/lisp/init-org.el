@@ -13,11 +13,29 @@
 (defun air-org-insert-first-link ()
   "Insert the first link in `org-stored-links', or do nothing."
   (interactive)
-  (let ((link (car org-stored-links)))
-    (org-insert-link nil (car link) (cadr link))))
+  (let* ((link (car org-stored-links))
+         (uri (car link))
+         (title (cadr link)))
+    (org-insert-link nil uri title)))
+
+(defun air-org-insert-link-dwim ()
+  "Attempt to insert a link as the user wanted, without asking.
+
+If the first entry of the kill ring starts with a protocol string,
+prompt for link text and insert a link pointing to that
+URL.  Otherwise, attempt to insert the first entry in
+`org-stored-links'.  If neither is possible, do nothing."
+  (interactive)
+  (if (string-match "^https?://" (current-kill 0 t))
+      (if-let ((url (current-kill 0 t))
+               (text (read-string (concat "Text for '"
+                                          (substring url 0 (min (length url) 50))
+                                          "': "))))
+          (org-insert-link nil (current-kill 0 t) text))
+    (call-interactively 'air-org-insert-first-link)))
 
 (defun air--alist-key-match-p (list substring)
-  "Return t if any key in LIST contains SUBSTRING."
+  "Return t if any key in LIST should contain SUBSTRING."
   (let ((found))
     (dolist (item list)
       (if (string-match-p substring (car item))
@@ -119,18 +137,16 @@ the headlines."
 (defun air-org-helm-headings ()
   "Call `helm-org-agenda-files-headings' with a longer list of files."
   (interactive)
-  (let ((org-agenda-files (list (expand-file-name "gtd/inbox.org" org-directory)
-                                (expand-file-name "gtd/team.org" org-directory)
-                                (expand-file-name "notes.org" org-directory))))
+  (let ((org-agenda-files (list (expand-file-name "gtd/tasks.org" org-directory)
+                                (expand-file-name "gtd/team.org" org-directory))))
     (call-interactively 'helm-org-agenda-files-headings)))
 
 (defun air--org-display-tag (tag &optional focus)
   "Display entries tagged with TAG in a fit window.
 
 Do not make the new window current unless FOCUS is set."
-  (let ((org-agenda-files (list (expand-file-name "gtd/inbox.org" org-directory)
-                                (expand-file-name "gtd/team.org" org-directory)
-                                (expand-file-name "notes.org" org-directory))))
+  (let ((org-agenda-files (list (expand-file-name "gtd/tasks.org" org-directory)
+                                (expand-file-name "gtd/team.org" org-directory))))
     (org-tags-view nil tag))
   (fit-window-to-buffer)
   (unless focus
@@ -162,25 +178,85 @@ Do not make the new window current unless FOCUS is set."
   (interactive "P")
   (air--org-display-tag "engineer" focus))
 
+(defun air--org-get-entry-end (&optional subtree)
+  "Get the position of the end of entry at point, or SUBTREE, if not nil."
+  (if subtree (save-excursion (org-end-of-subtree t) (point))
+    (org-entry-end-position)))
+
 (defun air-org-skip-tag-prefix (prefix &optional unless subtree)
   "Skip entries with tags having string prefix PREFIX.
 
 If UNLESS is not nil, skip entries wihout tags having prefix PREFIX.
 
 Skip the current entry unless SUBTREE is not nil."
-       (let* ((end (if subtree (save-excursion (org-end-of-subtree t))
-                    (save-excursion (progn (outline-next-heading) (1- (point))))))
+       (let* ((end (air--org-get-entry-end subtree))
               (tags (org-get-tags))
               (has-prefix (seq-filter (lambda (tag) (string-prefix-p prefix tag)) tags)))
-         (if (xor has-prefix unless) end nil)))
+         (if (org-xor has-prefix unless) end nil)))
+
+(defun air-org-skip-tag (tag &optional subtree)
+  "Skip entries having TAG.
+
+Skip only the current entry unless SUBTREE is not nil."
+  (let* ((end (air--org-get-entry-end subtree))
+         (tags (org-get-tags))
+         (has-tag (member tag tags)))
+    (if has-tag end nil)))
+
+(defun air-org-skip-if-active (&optional subtree)
+  "Skip entries with an :active: tag.
+
+If SUBTREE is not nil, check the entire subtree for `:active:' tags
+and skip the subtree if any are found."
+  (let ((end (air--org-get-entry-end subtree)))
+    (and (re-search-forward (rx bol (+ "*") (*? anychar) ":active:") end t)
+         end)))
+
+(defun air--entry-is-active ()
+  "Return non-nil if the current entry is not DONE and is marked :active:."
+  (and (not (org-entry-is-done-p))
+       (member "active" (org-get-tags))))
+
+(defun air-org-skip-if-scheduled (&optional subtree ignore-date)
+  "Skip entries that are scheduled.
+
+Skip the current entry unless SUBTREE is not nil, in which case skip
+the entire subtree.
+
+If IGNORE-DATE is nil, only skip entries that are scheduled to occur
+on a future date (not inclusive of today).  If not nil, skip any entry
+with a scheduled date regardless of its value."
+  (let ((end (air--org-get-entry-end subtree)))
+    (save-excursion
+      (catch :skip
+        (while (re-search-forward org-scheduled-time-regexp end t)
+          (if (or ignore-date
+                  (> (org-time-stamp-to-now (match-string 1)) 0))
+              (throw :skip end)))))))
+
+(defun air--entry-is-scheduled ()
+  "Return non-nil if the current entry has a `SCHEDULED' property."
+  (org-agenda-skip-if t '(scheduled)))
+
+(defun air-org-any-entry-below (predicate)
+  "Return non-nil if PREDICATE is non-nil for any entry below the current entry."
+  (org-back-to-heading t)
+  (let ((level (funcall outline-level)))
+    (save-excursion
+      (catch 'non-nil
+        (while (and (progn
+                      (outline-next-heading)
+                      (> (funcall outline-level) level))
+                    (not (eobp)))
+          (if (funcall predicate)
+              (throw 'non-nil t)))))))
 
 (defun air-org-skip-if-not-closed-today (&optional subtree)
   "Skip entries that were not closed today.
 
 Skip the current entry unless SUBTREE is not nil, in which case skip
 the entire subtree."
-       (let ((end (if subtree (save-excursion (org-end-of-subtree t))
-                    (save-excursion (progn (outline-next-heading) (1- (point))))))
+       (let ((end (air--org-get-entry-end subtree))
              (today-prefix (format-time-string "%Y-%m-%d")))
          (if (save-excursion
                (and (re-search-forward org-closed-time-regexp end t)
@@ -193,8 +269,7 @@ the entire subtree."
 
 Skip the current entry unless SUBTREE is not nil, in which case skip
 the entire subtree."
-  (let ((end (if subtree (save-excursion (org-end-of-subtree t))
-               (save-excursion (progn (outline-next-heading) (1- (point)))))))
+  (let ((end (air--org-get-entry-end subtree)))
     (if (not (save-excursion (re-search-forward org-closed-time-regexp end t)))
         end
       (let* ((now (current-time))
@@ -215,13 +290,16 @@ the entire subtree."
           end)))))
 
 (defun air-org-skip-if-habit (&optional subtree)
-  "Skip an agenda entry if it has a STYLE property equal to \"habit\".
+  "Skip an agenda entry (or SUBTREE, if not nil) if it is a habit."
+  (let ((end (air--org-get-entry-end subtree)))
+    (if (org-is-habit-p)
+        end
+      nil)))
 
-Skip the current entry unless SUBTREE is not nil, in which case skip
-the entire subtree."
-  (let ((end (if subtree (save-excursion (org-end-of-subtree t))
-               (save-excursion (progn (outline-next-heading) (1- (point)))))))
-    (if (string= (org-entry-get nil "STYLE") "habit")
+(defun air-org-skip-if-not-habit (&optional subtree)
+  "Skip an agenda entry (or SUBTREE, if not nil) if it is not a habit."
+  (let ((end (air--org-get-entry-end subtree)))
+    (if (not (org-is-habit-p))
         end
       nil)))
 
@@ -229,8 +307,7 @@ the entire subtree."
   "Skip an agenda entry if it has any category in CATEGORIES.
 
 Skip the current entry unless SUBTREE is not nil."
-  (let ((end (if subtree (save-excursion (org-end-of-subtree t))
-               (save-excursion (progn (outline-next-heading) (1- (point)))))))
+  (let ((end (air--org-get-entry-end subtree)))
     (if (member (org-get-category) categories)
         end
       nil)))
@@ -241,8 +318,7 @@ Skip the current entry unless SUBTREE is not nil."
 PRIORITY may be one of the characters ?A, ?B, or ?C.
 
 Skips the current entry unless SUBTREE is not nil."
-  (let ((end (if subtree (save-excursion (org-end-of-subtree t))
-               (save-excursion (progn (outline-next-heading) (1- (point))))))
+  (let ((end (air--org-get-entry-end subtree))
         (pri-value (* 1000 (- org-lowest-priority priority)))
         (pri-current (org-get-priority (thing-at-point 'line t))))
     (if (= pri-value pri-current)
@@ -274,11 +350,14 @@ Skips the current entry unless SUBTREE is not nil."
            (file (car id-parts))
            (line (cadr id-parts)))
       (with-current-buffer (org-get-agenda-file-buffer file)
-        (goto-char (point-min))
-        (forward-line line)
-        (org-reveal)
-        (org-up-element)
-        (list (current-buffer) (point))))))
+        (save-excursion
+          (save-restriction
+            (widen)
+            (goto-char (point-min))
+            (forward-line line)
+            (org-reveal)
+            (org-up-element)
+            (list (current-buffer) (point))))))))
 
 (defun air-org-goto-custom-id (&optional split)
   "Go to the location of a custom ID read interactively, maybe in a SPLIT."
@@ -307,6 +386,60 @@ Skips the current entry unless SUBTREE is not nil."
              (file (car id-parts))
              (line (cadr id-parts)))
         (org-insert-link nil (concat file "::#" custom-id) custom-id)))))
+
+(defun air-org-split-to-topics ()
+  "Split the window to a custom ID and related topics entry."
+  (interactive)
+  (let* ((person-id (completing-read
+                     "Custom ID: "
+                     (air--org-global-custom-ids)))
+         (topics-loc (air--org-find-custom-id "major-topics"))
+         (person-loc (air--org-find-custom-id person-id))
+         (this-scroll-margin
+          (min (max 0 scroll-margin)
+               (truncate (/ (window-body-height) 4.0))))
+         (original-window (selected-window)))
+    (when (and topics-loc person-loc)
+      (delete-other-windows)
+
+      (let ((org-agenda-window-setup 'current-window))
+        (org-tags-view t person-id))
+
+      (display-buffer (car person-loc)
+                      '(display-buffer-at-bottom))
+
+      (with-current-buffer (car person-loc)
+        (widen)
+        (goto-char (cadr person-loc))
+        (search-forward "One-on-one" nil t)
+        (if (not (org-at-heading-p))
+            (org-back-to-heading))
+        (outline-hide-subtree)
+        (outline-show-children 2)
+        (org-narrow-to-subtree))
+
+      ;; This is the tags buffer because `display-buffer-at-bottom'
+      ;; does not select the window
+      (fit-window-to-buffer nil nil nil nil nil t)
+
+      (display-buffer (car topics-loc)
+                      '(display-buffer-at-bottom))
+
+      (windmove-down)
+      (windmove-down)
+
+      (with-current-buffer (car topics-loc)
+        (widen)
+        (goto-char (cadr topics-loc))
+        (search-forward "Current" nil t)
+        (if (not (org-at-heading-p))
+            (org-back-to-heading))
+        (org-show-subtree)
+        (org-narrow-to-subtree))
+
+      (fit-window-to-buffer)
+      (windmove-up))))
+
 
 (defun air-org-nmom-capture-template ()
   "Return a Nine Minutes on Monday weekly agenda template suitable for capture."
@@ -426,19 +559,14 @@ If VANILLA is non-nil, run the standard `org-capture'."
   (air--pop-to-file (expand-file-name "gtd/inbox.org" org-directory) split))
 
 (defun air-pop-to-org-agenda-default (&optional nosplit)
-  "Pop to the default agenda in a split window unless NOSPLIT."
+  "Pop to the default agenda in the current window unless NOSPLIT."
   (interactive "P")
-  (air--pop-to-org-agenda-view "d" (not nosplit)))
+  (air--pop-to-org-agenda-view "d" nosplit))
 
 (defun air-pop-to-org-agenda-review (&optional nosplit)
   "Pop to the default agenda in a split window unless NOSPLIT."
   (interactive "P")
-  (air--pop-to-org-agenda-view "r" (not nosplit)))
-
-(defun air-pop-to-org-agenda-home (&optional nosplit)
-  "Pop to the personal agenda in a split unless NOSPLIT."
-  (interactive "P")
-  (air--pop-to-org-agenda-view "h" (not nosplit)))
+  (air--pop-to-org-agenda-view "r" nosplit))
 
 (defun air--pop-to-org-agenda-view (key &optional split)
   "Visit the org agenda KEY, in the current window or a SPLIT."
@@ -457,23 +585,6 @@ list-specific key maps."
   (if (= (current-column) 0)
       (insert (concat " " char " "))
     (insert char)))
-
-(defun air--org-swap-tags (tags)
-  "Replace any tags on the current headline with TAGS.
-
-The assumption is that TAGS will be a string conforming to Org Mode's
-tag format specifications, or nil to remove all tags."
-  (let ((old-tags (org-get-tags-string))
-        (tags (if tags
-                  (concat " " tags)
-                "")))
-    (save-excursion
-      (beginning-of-line)
-      (re-search-forward
-       (concat "[ \t]*" (regexp-quote old-tags) "[ \t]*$")
-       (line-end-position) t)
-      (replace-match tags)
-      (org-set-tags t))))
 
 (defun air-org-goto-first-child ()
   "Goto the first child, even if it is invisible.
@@ -526,7 +637,23 @@ TAG is chosen interactively from the global tags completion table."
                               ":"))
          (new (if (> (length new-tags) 1) (concat " :" new-tags ":")
                 nil)))
-    (air--org-swap-tags new)))
+    (org-set-tags new)))
+
+(defun air-org-toggle-active-tag ()
+  "Toggle the presence of the `active' tag on the current item."
+  (interactive)
+  (let* ((hdmarker (or (org-get-at-bol 'org-hd-marker)
+                       (org-agenda-error)))
+         (buffer (marker-buffer hdmarker))
+         (pos (marker-position hdmarker))
+         (inhibit-read-only t))
+    (org-agenda-set-tags "active")
+    (with-current-buffer buffer
+      (widen)
+      (goto-char pos)
+      (org-show-context 'agenda))
+    (beginning-of-line 1)
+    (org-agenda-redo-all)))
 
 ;;; Code:
 (use-package org
@@ -535,11 +662,7 @@ TAG is chosen interactively from the global tags completion table."
   :commands (org-capture)
   :bind (("C-c c" .   org-capture)
          ("C-c l" .   org-store-link)
-         ("C-c t n" . air-pop-to-org-notes)
-         ("C-c t t" . air-pop-to-org-todo)
-         ("C-c t v" . air-pop-to-org-vault)
-         ("C-c t a" . air-pop-to-org-agenda)
-         ("C-c t A" . org-agenda)
+         ("C-c t" .   org-todo)
          ("C-c f k" . org-search-view)
          ("C-c f t" . org-tags-view)
          ("C-c f i" . air-org-goto-custom-id))
@@ -549,14 +672,105 @@ TAG is chosen interactively from the global tags completion table."
   (setq org-modules
         '(org-bbdb org-bibtex org-docview org-habit org-info org-w3m))
   (setq org-todo-keywords
-        '((sequence "TODO" "WAITING(!)" "|" "DONE(!)" "CANCELED(!)")))
+        '((sequence "TODO(t)" "IN-PROGRESS(p)" "WAITING(w!)" "|" "DONE(d!)" "CANCELED(c!)")))
   (setq org-blank-before-new-entry '((heading . t)
                                      (plain-list-item . t)))
-  (setq org-stuck-projects '("+project/-DONE" ("TODO" "NEXT" "WAITING") nil ""))
+  (setq org-stuck-projects '("+LEVEL=1/-DONE-TODO-IN\-PROGRESS-WAITING-CANCELED" () ("active") ""))
 
   (defun air--org-bullet-daily-log-filename ()
     "Return the filename of today's Bullet Journal Daily Log."
     (format-time-string "%Y-%m-%d.org"))
+
+  (defvar summary-annotations
+    '("_" "@")
+    "Characters used to annotate progressive summarization of content.")
+
+  (defun air--within-annotated-region-p ()
+    "Returns non-nil if point is within an annotated region.
+
+Annotated regions are surrounded by one of the characters in `summary-annotations'."
+    (interactive)
+    (save-excursion
+      (forward-char 1)
+      (catch 'done
+        (mapcar (lambda (c)
+                  (let ((start (save-excursion (search-backward-regexp (concat c "\\w") (line-beginning-position) t)))
+                        (end (save-excursion (search-forward-regexp (concat "\\w" c) (line-end-position) t))))
+                    (if (and start end)
+                        (throw 'done (list c start end)))))
+                summary-annotations)
+        nil)))
+
+  (defun air-promote-summary ()
+    "Promote the summarization annotation at point.
+
+If a region is active, apply the lowest level summary
+annotation. Else, promote the surrounding summary annotation to the
+next level or fail."
+    (interactive)
+    (if (use-region-p)
+        (air--toggle-surrounding-chars (car summary-annotations))
+      (let ((annotation (air--within-annotated-region-p)))
+        (if (not annotation)
+            (user-error "Point is not within an annotated region")
+          (let* ((current (car annotation))
+                 (next (cadr (member current summary-annotations))))
+            (if (not next)
+                (user-error "Region is annotated at the highest level"))
+            (goto-char (cadr annotation))
+            (delete-char 1)
+            (insert next)
+            (goto-char (1- (caddr annotation)))
+            (delete-char 1)
+            (insert next))))))
+
+  (defun air-demote-summary ()
+    "Demote the summarization annotation at point.
+
+Demote the surrounding summary annotation to the next lowest level or
+fail."
+    (interactive)
+    (if (use-region-p)
+        (user-error "Demoting a summary cannot operate on a region")
+      (let ((annotation (air--within-annotated-region-p)))
+        (if (not annotation)
+            (user-error "Point is not within an annotated region")
+          (let* ((current (car annotation))
+                 (next (cadr (member current (reverse summary-annotations)))))
+            (goto-char (cadr annotation))
+            (delete-char 1)
+            (if next (insert next))
+            (goto-char (- (caddr annotation) (if next 1 2)))
+            (delete-char 1)
+            (if next (insert next)))))))
+
+  (defun air--toggle-surrounding-chars (chars &optional after-chars)
+    "Insert CHARS before and after the current region."
+    (if (not (use-region-p))
+        (user-error "Mark a region before inserting surrounding chars"))
+    (if (and after-chars
+             (not (= (length chars) (length after-chars))))
+        (user-error "CHARS and AFTER-CHARS must be equivalent in length"))
+    (let* ((cur-point (point))
+           (beg (region-beginning))
+           (end (region-end))
+           (after-chars (or after-chars chars))
+           (start-char (buffer-substring-no-properties beg (+ beg (length chars))))
+           (end-char (buffer-substring-no-properties end (+ end (length after-chars)))))
+      (if (and (string= start-char chars)
+               (string= end-char after-chars))
+          (progn
+            (goto-char end)
+            (delete-char (length after-chars))
+            (goto-char (1+ (- beg (length chars))))
+            (delete-char (length chars))
+            (goto-char (- cur-point (length chars))))
+        (progn
+          (goto-char end)
+          (insert after-chars)
+          (goto-char beg)
+          (insert chars)
+          (goto-char (+ (length chars) cur-point))))))
 
   (setq org-capture-templates
         `(
@@ -565,34 +779,20 @@ TAG is chosen interactively from the global tags completion table."
            (function air-org-nmom-capture-template)
            :empty-lines 1)
 
-          ("c" "An incoming work item." entry
-           (file+headline "gtd/inbox.org" "Work")
-           ,(concat "* TODO %?\n"
+          ("c" "An incoming task." entry
+           (file "gtd/tasks.org")
+           ,(concat "* TODO %? :active:\n"
                     ":PROPERTIES:\n"
                     ":CREATED:  %u\n"
                     ":END:\n")
            :empty-lines 1)
 
-          ("p" "An incoming personal item." entry
-           (file+headline "gtd/inbox.org" "Home")
+          ("b" "An incoming backlog item." entry
+           (file "gtd/tasks.org")
            ,(concat "* TODO %?\n"
                     ":PROPERTIES:\n"
                     ":CREATED:  %u\n"
                     ":END:\n")
-           :empty-lines 1)
-
-          ("r" "A Reminder (tickler)." entry
-           (file "gtd/tickler.org")
-           "* %?\nSCHEDULED: %^t"
-           :empty-lines 1)
-
-          ("l" "A link to read later." entry
-           (file "gtd/reading.org")
-           ,(concat "* TODO %?\n"
-                    ":PROPERTIES:\n"
-                    ":CREATED:  %u\n"
-                    ":END:\n\n"
-                    "%i")
            :empty-lines 1)
 
           ("n" "A note." entry
@@ -602,12 +802,33 @@ TAG is chosen interactively from the global tags completion table."
                     ":CREATED:  %u\n"
                     ":END:\n\n"))
 
-          ("o" "A personal note." entry
-           (file "personal/notes.org")
-           ,(concat "* %?\n"
+          ("r" "A Reminder (tickler)." entry
+           (file "gtd/tickler.org")
+           "* %?\nSCHEDULED: %^t"
+           :empty-lines 1)
+
+          ("l" "Capture links to read later.")
+
+          ("ln" "A link to read later (no selection)." entry
+           (file "gtd/reading.org")
+           ,(concat "* TODO %:annotation\n"
                     ":PROPERTIES:\n"
                     ":CREATED:  %u\n"
-                    ":END:\n\n"))))
+                    ":END:\n\n"
+                    "%:link\n\n"
+                    "%?")
+           :empty-lines 1)
+
+          ("ls" "A link to read later (selection)." entry
+           (file "gtd/reading.org")
+           ,(concat "* TODO %:annotation\n"
+                    ":PROPERTIES:\n"
+                    ":CREATED:  %u\n"
+                    ":END:\n\n"
+                    "%:link\n\n"
+                    "%i\n\n"
+                    "%?")
+           :empty-lines 1)))
 
   (setq org-directory
         (if (file-directory-p (expand-file-name "~/Dropbox (personal)"))
@@ -616,9 +837,9 @@ TAG is chosen interactively from the global tags completion table."
   (setq org-default-notes-file (expand-file-name "gtd/inbox.org" org-directory))
 
   ;; Logging of state changes
-  (setq org-log-done (quote time))
-  (setq org-log-redeadline (quote time))
-  (setq org-log-reschedule (quote time))
+  ;; (setq org-log-done (quote time))
+  ;; (setq org-log-redeadline (quote time))
+  ;; (setq org-log-reschedule (quote time))
   (setq org-log-into-drawer t)
 
   (setq org-pretty-entities t)
@@ -626,6 +847,7 @@ TAG is chosen interactively from the global tags completion table."
   (setq org-ellipsis " …")
   (setq org-export-initial-scope 'subtree)
   (setq org-export-with-section-numbers nil)
+  (setq org-export-with-toc nil)
   (setq org-use-tag-inheritance nil) ;; Use the list form, which happens to be blank
   (setq org-todo-keyword-faces
         '(("OPEN" . org-done)
@@ -633,13 +855,23 @@ TAG is chosen interactively from the global tags completion table."
 
   ;; Agenda configuration
   (setq org-agenda-text-search-extra-files '(agenda-archives))
-  (setq org-agenda-files (list (expand-file-name "gtd/inbox.org" org-directory)
-                               (expand-file-name "gtd/team.org" org-directory)))
-  (setq org-refile-targets `((,(expand-file-name "notes.org" org-directory) :maxlevel . 2)
-                             (,(expand-file-name "gtd/inbox.org" org-directory) :maxlevel . 2)
-                             (,(expand-file-name "gtd/someday.org" org-directory) :maxlevel . 2)
-                             (,(expand-file-name "gtd/tickler.org" org-directory) :maxlevel . 2)
-                             (,(expand-file-name "gtd/team.org" org-directory) :maxlevel . 3)))
+  (setq org-agenda-files (list (expand-file-name "gtd/tasks.org" org-directory)
+                               (expand-file-name "notes.org" org-directory)
+                               (expand-file-name "gtd/team.org" org-directory)
+                               (expand-file-name "gtd/reading.org" org-directory)
+                               (expand-file-name "gk-roam" org-directory)))
+  (setq org-refile-targets `((,(expand-file-name "gtd/tasks.org" org-directory) :maxlevel . 2)
+                             (,(expand-file-name "notes.org" org-directory) :maxlevel . 2)
+                             (,(expand-file-name "gtd/projects.org" org-directory) :maxlevel . 2)
+                             (,(expand-file-name "gtd/backlog.org" org-directory) :maxlevel . 1)
+                             (,(expand-file-name "gtd/habits.org" org-directory) :maxlevel . 1)))
+  ;; Headings between agenda blocks
+  (set-face-attribute 'org-agenda-structure nil
+                      :foreground "LightGray"
+                      :weight 'bold
+                      :underline nil
+                      :box nil)
+  (setq org-agenda-tags-column -89)
   (setq org-refile-use-outline-path 'file)
   (setq org-refile-allow-creating-parent-nodes 'confirm)
   (setq org-outline-path-complete-in-steps nil)
@@ -650,108 +882,174 @@ TAG is chosen interactively from the global tags completion table."
           " │" "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄")))
   (setq org-enforce-todo-dependencies t)
   (setq org-agenda-dim-blocked-tasks t)
-  (setq org-tag-alist '(("@cal" . ?c)
-                        ("@home" . ?h)))
+
+  ;; Tagging
+  (setq org-tag-alist '(("active" . ?a)
+                        ("reading" . ?r)))
+  (setq org-fast-tag-selection-single-key t)
+
   (setq org-agenda-skip-scheduled-if-done t)
   (setq org-agenda-hide-tags-regexp "project\\|work\\|home\\|@.*")
+  (setq org-habit-today-glyph ?o)
+  (setq org-habit-completed-glyph ?*)
+  (setq org-habit-show-all-today t)
 
-  (defun air--format-project-prefix ()
+  (defun air--org-todo-state-change-handler ()
+    "Take an action when the TODO state changes.
+
+When the state changes to DONE, remove the `active' tag.
+
+When the state changes to WAITING, add a property WAITING_FROM with
+the current timestamp."
+    (cond ((and (string= org-state "DONE")
+                (not (org-is-habit-p)))
+           (org-set-tags-to (delete "active" (delete "" (org-get-tags)))))
+
+          ((string= org-state "WAITING")
+           (org-entry-put (point) "WAITING_FROM" (current-time-string)))))
+
+  (defun air--seconds-to-diff (seconds)
+    "Convert SECONDS into a human-readable time span."
+    (let* ((seconds (floor seconds))
+           (days (/ seconds 86400))
+           (day-seconds (% seconds 86400))
+           (hours (/ day-seconds 3600))
+           (hour-seconds (% day-seconds 3600))
+           (minutes (/ hour-seconds 60)))
+      (concat
+       (if (> days 0) (format "%sd" days)
+         (format "%sh" hours)))))
+
+  (defun air--full-project-prefix ()
     (let ((outline-list (org-get-outline-path)))
       (concat
        "  "
        (if (> (length outline-list) 1)
            (concat (cadr outline-list) " → ")))))
 
+  (defun air--fixed-project-prefix (&optional width)
+    (let* ((outline-list (org-get-outline-path))
+           (max-len (or width 20))
+           (project (cond ((= (length outline-list) 1)
+                           (car outline-list))
+                          ((> (length outline-list) 1)
+                           (concat (car outline-list)
+                                   "→"
+                                   (car (last outline-list))))
+                          ((org-get-category)
+                           (org-get-category))
+                          (t "")))
+           (waiting-from (org-entry-get (point) "WAITING_FROM"))
+           (time-delta (if (and waiting-from
+                                (string= (org-get-todo-state) "WAITING"))
+                           (format " (%s)" (air--seconds-to-diff
+                                            (- (time-to-seconds (current-time))
+                                               (time-to-seconds (date-to-time waiting-from)))))
+                         ""))
+           (total-len (+ (length project)
+                         (length time-delta)))
+           (substring-index (if (> total-len max-len)
+                                (- (length project) (- total-len max-len))
+                              (length project)))
+           (project-trimmed (concat (string-trim (substring project 0 substring-index))
+                                    time-delta)))
+      (concat " "
+              (make-string (- max-len (length project-trimmed)) 32)
+              project-trimmed
+              (if (> (length project-trimmed) 0) ": " "  "))))
+
   (defun air--format-for-meetings-prefix ()
     (let ((id (car (seq-filter (lambda (tag) (string-prefix-p "@" tag)) (org-get-tags)))))
       (if id
-          (format "  %-10s " (substring id 0 (min (length id) 10)))
-        "                  "
-        )))
+          (format "  %17s: " (substring id 0 (min (length id) 10)))
+        "                  ")))
 
   (defun air--org-separating-heading (heading)
     "Print HEADING padded with characters to create a separator."
     (concat heading
             " "
-            (make-string (- 78 (length heading)) ?―)))
+            (make-string (- 80 (length heading)) ? )))
+
+  (defun air--org-all-todo-keywords ()
+    "Return a list of all bare TODO keywords."
+    (let (kw)
+      (dolist (seq org-todo-keywords)
+        (setq kw (append kw
+                         (org-remove-keyword-keys
+                          (delete "|" (cdr seq))))))
+      kw))
 
   (setq org-agenda-custom-commands
         '(("d" "Omnibus agenda"
            ((agenda ""
                     ((org-agenda-span 1)
-                     (org-agenda-skip-function '(org-agenda-skip-entry-if 'todo '("WAITING")))
-                     (org-agenda-files (list (expand-file-name "gtd/inbox.org" org-directory)
-                                             (expand-file-name "gtd/team.org" org-directory)
-                                             (expand-file-name "gtd/tickler.org" org-directory)
-                                             (expand-file-name "hubspot.org" org-directory)
-                                             (expand-file-name "diary.org" org-directory)))))
-            (tags "project+CATEGORY=\"work\"/-DONE"
-                       ((org-agenda-overriding-header (air--org-separating-heading "Work Projects"))
-                        (org-agenda-dim-blocked-tasks nil)
-                        (org-agenda-prefix-format "%(air--format-project-prefix)")))
-            (tags "project+CATEGORY=\"home\"/-DONE"
-                       ((org-agenda-overriding-header (air--org-separating-heading "Personal Projects"))
-                        (org-agenda-dim-blocked-tasks nil)
-                        (org-agenda-prefix-format "%(air--format-project-prefix)")))
-            (todo "WAITING"
-                  ((org-agenda-skip-function 'air-org-skip-if-habit)
-                   (org-agenda-overriding-header (air--org-separating-heading "Waiting"))
-                   (org-agenda-files (list (expand-file-name "gtd/inbox.org" org-directory)))))
+                     (org-agenda-hide-tags-regexp "active")
+                     (org-agenda-prefix-format "%(air--fixed-project-prefix)%?-12t% s")
+                     (org-agenda-skip-function '(or (org-agenda-skip-entry-if 'todo '("WAITING"))
+                                                    (air-org-skip-tag-prefix "@")
+                                                    (air-org-skip-if-habit)))))
+            (tags-todo "active-reading/!-WAITING-DONE-CANCELED"
+                       ((org-agenda-overriding-header (air--org-separating-heading "Tasks"))
+                        (org-agenda-hide-tags-regexp "active")
+                        (org-agenda-skip-function '(or (org-agenda-skip-entry-if 'scheduled 'deadline)
+                                                       (air-org-skip-tag-prefix "@")))
+                        (org-agenda-prefix-format "%(air--fixed-project-prefix)")
+                        (org-agenda-sorting-strategy '(todo-state-down priority-down category-up))))
             (todo "TODO"
-                  ((org-agenda-overriding-header (air--org-separating-heading "For meetings"))
-                   (org-agenda-skip-function '(air-org-skip-tag-prefix "@" t))
+                  ((org-agenda-overriding-header (air--org-separating-heading "For Meetings"))
+                   (org-agenda-skip-function '(or (air-org-skip-tag-prefix "@" t)
+                                                  (air-org-skip-if-scheduled t)))
+                   (org-agenda-hide-tags-regexp ".")
                    (org-agenda-sorting-strategy '(tag-up))
                    (org-agenda-prefix-format "%(air--format-for-meetings-prefix)")))
-            (stuck ""
-                   ((org-agenda-overriding-header (air--org-separating-heading "Stuck Projects")))))
+            (todo "WAITING"
+                  ((org-agenda-overriding-header (air--org-separating-heading "Waiting"))
+                   (org-agenda-skip-function 'air-org-skip-if-habit)
+                   (org-agenda-hide-tags-regexp "active")
+                   (org-agenda-prefix-format "%(air--fixed-project-prefix)")))
+            (tags "reading/-DONE" ((org-agenda-overriding-header (air--org-separating-heading "Reading list"))
+                                   (org-agenda-hide-tags-regexp "reading\\|active")
+                                   (org-agenda-prefix-format "%(air--fixed-project-prefix)")))
+            (agenda ""
+                    ((org-agenda-overriding-header (air--org-separating-heading "Habits"))
+                     (org-agenda-files (list (expand-file-name "gtd/habits.org" org-directory)))
+                     (org-agenda-sorting-strategy '(tag-up))
+                     (org-agenda-prefix-format "  ")
+                     (org-agenda-compact-blocks nil)
+                     (org-agenda-time-grid nil)
+                     (org-agenda-span 1)
+                     (org-agenda-skip-function 'air-org-skip-if-not-habit)))
+            (tags "+LEVEL=1"
+                  ((org-agenda-overriding-header (air--org-separating-heading "Inactive Projects"))
+                   (org-agenda-skip-function '(or
+                                               ;; Non-todo top-level headings only
+                                               (org-agenda-skip-entry-if 'todo (air--org-all-todo-keywords))
+                                               (air-org-skip-if-scheduled t)
+                                               (air-org-skip-if-active t)))
+                   (org-agenda-files (list (expand-file-name "gtd/tasks.org" org-directory))))))
            ((org-use-property-inheritance t)
-            (org-agenda-compact-blocks t)))
+            (org-agenda-block-separator "")
+            (org-agenda-compact-blocks nil)))
 
           ("r" "Inbox review"
-           ((agenda "" ((org-agenda-span 2)
+           ((agenda "" ((org-agenda-span 14)
                         (org-agenda-time-grid nil)
-                        (org-agenda-files (list (expand-file-name "gtd/inbox.org" org-directory)
-                                                (expand-file-name "gtd/team.org" org-directory)
-                                                (expand-file-name "gtd/tickler.org" org-directory)
-                                                (expand-file-name "hubspot.org" org-directory)
-                                                (expand-file-name "diary.org" org-directory)))))
+                        (org-agenda-skip-function '(or (org-agenda-skip-entry-if 'todo '("WAITING"))
+                                                       (air-org-skip-if-habit)))))
             (todo "TODO"
                   ((org-agenda-overriding-header (air--org-separating-heading "Mobile (REFILE ↓)"))
                    (org-agenda-files (list (expand-file-name "orgzly/inbox.org" org-directory)))))
-            (tags-todo "+CATEGORY=\"work\"+TODO=\"TODO\""
-                       ((org-agenda-overriding-header (air--org-separating-heading "Work"))
-                        (org-agenda-skip-function '(or (org-agenda-skip-if nil '(scheduled deadline))
-                                                       (air-org-skip-tag-prefix "@")))))
-            (tags-todo "+CATEGORY=\"home\"+TODO=\"TODO\""
-                       ((org-agenda-overriding-header (air--org-separating-heading "Home"))
-                        (org-agenda-skip-function '(or (org-agenda-skip-if nil '(scheduled deadline))
-                                                       (air-org-skip-tag-prefix "@")))))
-            (todo "TODO"
-                  ((org-agenda-overriding-header (air--org-separating-heading "Uncategorized"))
-                   (org-agenda-skip-function '(air-org-skip-if-categorized '("home" "work")))))
-            (todo "" ((org-agenda-files (list (expand-file-name "gtd/reading.org" org-directory)))
-                      (org-agenda-overriding-header (air--org-separating-heading "Reading list")))))
+            (tags-todo "-active-reading+TODO=\"TODO\"|TODO=\"IN-PROGRESS\""
+                  ((org-agenda-overriding-header (air--org-separating-heading "Backlog"))
+                   (org-agenda-skip-function '(or (air-org-skip-if-scheduled t)
+                                                  (air-org-skip-tag-prefix "@")))
+                   (org-agenda-prefix-format "%(air--fixed-project-prefix)")))
+            (tags "LEVEL=1/DONE"
+                  ((org-agenda-overriding-header (air--org-separating-heading "Completed")))))
            ((org-use-property-inheritance t)
-            (org-agenda-compact-blocks t)))))
-
-  (add-to-list 'org-structure-template-alist
-               (list "p" (concat ":PROPERTIES:\n"
-                                 "?\n"
-                                 ":END:")))
-
-  (add-to-list 'org-structure-template-alist
-               (list "eb" (concat ":EXPORT_FILE_NAME: ?\n"
-                                  ":EXPORT_TITLE:\n"
-                                  ":EXPORT_BEAMER_HEADER: \\subtitle{}\n"
-                                  ":EXPORT_AUTHOR: Aaron Bieber\n"
-                                  ":EXPORT_OPTIONS: H:1 toc:nil\n"
-                                  ":EXPORT_BEAMER_THEME: wayfair\n"
-                                  ":EXPORT_LATEX_CLASS: beamer")))
-
-  (add-to-list 'org-structure-template-alist
-               (list "eh" (concat ":EXPORT_FILE_NAME: ?\n"
-                                  ":EXPORT_TITLE:\n"
-                                  ":EXPORT_OPTIONS: toc:nil html-postamble:nil num:nil")))
+            (org-agenda-tag-filter-preset '("-active" "-reading"))
+            (org-agenda-block-separator "")
+            (org-agenda-compact-blocks nil)))))
 
   (set-face-attribute 'org-upcoming-deadline nil :foreground "gold1")
 
@@ -773,21 +1071,21 @@ TAG is chosen interactively from the global tags completion table."
              (end (org-element-property :end element)))
         (list end begin))))
 
-  (evil-define-text-object evil-org-outer-element (count &optional beg end type)
-    "One whole org element, from headline to final newline."
-    :type line
-    (air--org-element-motion count))
+  (defun air--org-inner-element-bounds (count &optional notrim)
+    "Return the bounds of the current element's content.
 
-  (evil-define-text-object evil-org-inner-element (count &optional beg end type)
-    "An Org subtree, minus its header and concluding line break.  Uses code from `org-mark-subtree`"
-    :type line
+Traverses up the element tree COUNT elements and returns the bounds of
+that element's content minus its header and concluding line break.
+
+If NOTRIM is non-nil, include leading blank lines in the content."
     (let* ((outer-points (air--org-element-motion count))
            (outer-begin (cadr outer-points))
            (outer-end (car outer-points))
            (begin (save-excursion
                     (goto-char outer-begin)
                     (next-line)
-                    (while (and (< (point) outer-end)
+                    (while (and (not notrim)
+                                (< (point) outer-end)
                                 (string-match-p "^\\s-*$"
                                                 (buffer-substring (line-beginning-position)
                                                                   (line-end-position))))
@@ -805,8 +1103,48 @@ TAG is chosen interactively from the global tags completion table."
                   (point))))
       (list end begin)))
 
+  (evil-define-text-object evil-org-outer-element (count &optional beg end type)
+    "One whole org element, from headline to final newline."
+    :type line
+    (air--org-element-motion count))
+
+  (evil-define-text-object evil-org-inner-element (count &optional beg end type)
+    "An Org subtree, minus its header and concluding line break.  Uses code from `org-mark-subtree`"
+    :type line
+    (air--org-inner-element-bounds count))
+
   (define-key evil-outer-text-objects-map "*" 'evil-org-outer-element)
   (define-key evil-inner-text-objects-map "*" 'evil-org-inner-element)
+
+  (defun air-org-narrow-to-prose-dwim ()
+    "Narrow and activate a writing mode.
+
+If the current buffer is visiting an Org Mode file, narrow to the Org
+element at point as well. If the view is already narrowed and the
+writing mode is already active, undo all of that."
+    (interactive)
+    (if (and (boundp 'writeroom-mode)
+             writeroom-mode)
+        (progn (writeroom-mode 0)
+               (widen)
+               (if (member 'visual-fill-column-mode minor-mode-list)
+                  (visual-fill-column-adjust)))
+      (if (eq major-mode 'org-mode)
+          (let ((bounds (air--org-inner-element-bounds 0 t)))
+            (narrow-to-region (cadr bounds) (car bounds))))
+      (writeroom-mode t)))
+
+  (defun air-roam-grep (search-term)
+    "Search for a string in `org-roam-directory'."
+    (interactive (list (deadgrep--read-search-term)))
+    (let ((deadgrep-project-root-function (list 'lambda '() org-roam-directory)))
+      (deadgrep search-term)))
+
+  (defun air-org-grep (search-term)
+    "Search for a string in `org-directory'."
+    (interactive (list (deadgrep--read-search-term)))
+    (let ((deadgrep-project-root-function (list 'lambda '() org-directory)))
+      (deadgrep search-term)))
 
   (evil-leader/set-key-for-mode 'org-mode
     "$"  'org-archive-subtree
@@ -822,6 +1160,8 @@ TAG is chosen interactively from the global tags completion table."
             (lambda ()
               (setq org-habit-graph-column 50)
               (define-key org-agenda-mode-map (kbd "@")   'org-agenda-refile)
+              (define-key org-agenda-mode-map (kbd "A")   'air-org-toggle-active-tag)
+              (define-key org-agenda-mode-map (kbd "a")   'org-agenda-archive)
               (define-key org-agenda-mode-map (kbd "/")   'counsel-grep-or-swiper)
               (define-key org-agenda-mode-map (kbd "H")   'beginning-of-buffer)
               (define-key org-agenda-mode-map (kbd "J")   'air-org-agenda-next-header)
@@ -829,7 +1169,6 @@ TAG is chosen interactively from the global tags completion table."
               (define-key org-agenda-mode-map (kbd "M")   'org-agenda-bulk-unmark)
               (define-key org-agenda-mode-map (kbd "R")   'org-revert-all-org-buffers)
               (define-key org-agenda-mode-map (kbd "c")   (lambda () (interactive) (org-capture nil "c")))
-              (define-key org-agenda-mode-map (kbd "p")   (lambda () (interactive) (org-capture nil "p")))
               (define-key org-agenda-mode-map (kbd "j")   'org-agenda-next-item)
               (define-key org-agenda-mode-map (kbd "k")   'org-agenda-previous-item)
               (define-key org-agenda-mode-map (kbd "u")   'org-agenda-undo)
@@ -851,6 +1190,8 @@ TAG is chosen interactively from the global tags completion table."
   (add-hook 'org-log-buffer-setup-hook
             (lambda ()
               (evil-insert-state)))
+
+  (add-hook 'org-after-todo-state-change-hook 'air--org-todo-state-change-handler)
 
   (add-hook 'org-capture-mode-hook
             (lambda ()
@@ -916,6 +1257,9 @@ TAG is chosen interactively from the global tags completion table."
 
               (evil-define-key 'normal org-mode-map (kbd "[[")    'air-org-toggle-checkbox-dwim)
 
+              (evil-define-key '(normal visual) org-mode-map (kbd "+") 'air-promote-summary)
+              (evil-define-key 'normal org-mode-map          (kbd "=") 'air-demote-summary)
+
               ;; Navigation
               (define-key org-mode-map (kbd "M-h") 'org-up-element)
               (define-key org-mode-map (kbd "M-j") 'org-forward-heading-same-level)
@@ -931,6 +1275,7 @@ TAG is chosen interactively from the global tags completion table."
 
               (require 'ox)
               (require 'ox-beamer)
+              (require 'ox-md)
               (setf org-export-dispatch-use-expert-ui t)
               (add-to-list 'org-export-filter-bold-functions 'air--beamer-bold)
 
@@ -945,11 +1290,14 @@ TAG is chosen interactively from the global tags completion table."
                 (visual-line-mode)
                 (visual-fill-column-mode)
                 (flyspell-mode)
-                (org-indent-mode)))))
+                (org-indent-mode)
+                (highlight-regexp "@.*?@" 'hi-blue)))))
 
 (use-package org-evil
   :ensure t
   :config
+  (evil-define-minor-mode-key 'normal 'org-evil-heading-mode ":" 'org-set-tags-command)
+  (evil-define-minor-mode-key 'normal 'org-evil-heading-mode "t" 'org-todo)
   (evil-define-minor-mode-key 'normal 'org-evil-heading-mode "@" 'org-refile)
   (evil-define-minor-mode-key 'normal 'org-evil-heading-mode "#" 'org-add-note)
   (evil-define-minor-mode-key 'normal 'org-evil-heading-mode "+" 'org-shiftup)
@@ -959,7 +1307,23 @@ TAG is chosen interactively from the global tags completion table."
   :ensure t
   :config
   (add-hook 'org-mode-hook (lambda () (org-bullets-mode 1)))
-  (setq org-bullets-bullet-list '("•")))
+  (setq org-bullets-bullet-list '("⋄" "•" "◦")))
+
+(use-package ox-clip
+  :ensure t
+  :defer t
+  :config
+  (evil-define-key 'visual org-mode-map (kbd "gy") 'ox-clip-formatted-copy))
+
+(use-package gk-roam
+  :config
+  (setq gk-roam-root-dir "~/Dropbox/org/gk-roam/")
+  (setq gk-roam-pub-dir "~/Dropbox/org/gk-roam/site/")
+  (setq gk-roam-require-tags nil)
+  (global-set-key (kbd "C-c r r") 'gk-roam-index)
+  (global-set-key (kbd "C-c r f") 'gk-roam-find)
+  (global-set-key (kbd "C-c r i") 'gk-roam-insert-link-dwim)
+  (global-set-key (kbd "C-c r u") 'gk-roam-update))
 
 (provide 'init-org)
 ;;; init-org.el ends here

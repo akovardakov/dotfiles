@@ -21,7 +21,7 @@
     "h"  'fontify-and-browse    ;; HTML-ize the buffer and browse the result
     "l"  'whitespace-mode       ;; Show invisible characters
     "nn" 'air-narrow-dwim       ;; Narrow to region and enter normal mode
-    "nw" 'widen
+    "nw" 'air-org-narrow-to-prose-dwim
     "o"  'delete-other-windows  ;; C-w o
     "p"  'helm-show-kill-ring
     "s"  'ag-project            ;; Ag search from project's root
@@ -52,12 +52,16 @@
                   eshell-mode
                   flycheck-error-list-mode
                   git-rebase-mode
+                  hugo-mode
+                  hugo-server-mode
+                  hugo-process-mode
                   octopress-mode
                   octopress-server-mode
                   octopress-process-mode
                   org-capture-mode
                   sunshine-mode
-                  term-mode))
+                  term-mode
+                  deadgrep-mode))
     (add-to-list 'evil-emacs-state-modes mode))
 
   (delete 'term-mode evil-insert-state-modes)
